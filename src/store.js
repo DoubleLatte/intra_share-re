@@ -7,6 +7,7 @@ const store = new Store({
       enableNotifications: true,
       hamachiEnabled: false,
       manualIpEnabled: false,
+      firewallAutoConfig: true,
       theme: "dark",
       enableNotifications: true,
       autoReceive: false,
