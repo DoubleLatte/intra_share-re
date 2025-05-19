@@ -3,6 +3,10 @@ const Store = require("electron-store");
 const store = new Store({
   defaults: {
     settings: {
+      enableTray: true,
+      enableNotifications: true,
+      hamachiEnabled: false,
+      manualIpEnabled: false,
       theme: "dark",
       enableNotifications: true,
       autoReceive: false,
