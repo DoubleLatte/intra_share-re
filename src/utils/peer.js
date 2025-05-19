@@ -1,8 +1,19 @@
 const Peer = require("simple-peer");
 const wrtc = require("wrtc");
 const { encryptData, decryptData } = require("./encryption");
+const { io } = require("socket.io-client");
+const fs = require("fs");
+const path = require("path");
 
 let currentTransfer = null;
+let socket = null;
+
+function initSocket(device) {
+  if (!socket || socket.disconnected) {
+    socket = io(`http://${device.host}:${device.port}`, { reconnection: true });
+  }
+  return socket;
+}
 
 function initPeer(initiator, id, options = {}) {
   const peer = new Peer({
@@ -12,7 +23,9 @@ function initPeer(initiator, id, options = {}) {
     config: {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "turn:turn.example.com", username: "user", credential: "pass" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        // 실제 TURN 서버 추가 필요
+        // { urls: "turn:your-turn-server.com", username: "user", credential: "pass" },
       ],
     },
   });
@@ -27,7 +40,6 @@ function initPeer(initiator, id, options = {}) {
 function sendFiles(files, device, onProgress, addHistory, chunked = false) {
   return new Promise((resolve, reject) => {
     const peer = initPeer(true, "sender");
-    const fs = require("fs");
     let totalSize = 0;
     let transferred = 0;
 
@@ -35,18 +47,88 @@ function sendFiles(files, device, onProgress, addHistory, chunked = false) {
       totalSize += fs.statSync(file).size;
     });
 
+    const socket = initSocket(device);
+
     peer.on("signal", (data) => {
-      require("socket.io-client")("http://localhost:3000").emit("signal", {
-        to: device,
-        signal: data,
-      });
+      socket.emit("signal", { to: device.name, signal: data });
     });
 
     peer.on("connect", () => {
       files.forEach((file) => {
         const fileData = fs.readFileSync(file);
-        const name = require("path").basename(file);
+        const name = path.basename(file);
         const data = { type: "file", name, data: fileData };
+        if (chunked) {
+          const CHUNK_SIZE = 1024 * 1024; // 1MB
+          for (let i = 0; i < fileData.length; i += CHUNK_SIZE) {
+            const chunk = fileData.slice(i, i + CHUNK_SIZE);
+            peer.send(JSON.stringify({ ...data, chunk, chunkIndex: i / CHUNK_SIZE, totalChunks: Math.ceil(fileData.length / CHUNK_SIZE) }));
+            transferred += chunk.length;
+            onProgress(transferred / totalSize);
+          }
+        } else {
+          peer.send(JSON.stringify(data));
+          transferred += fileData.length;
+          onProgress(transferred / totalSize);
+        }
+        addHistory({
+          id: Date.now(),
+          type: "send",
+          fileName: name,
+          device: device.name,
+          timestamp: new Date().toISOString(),
+          status: "success",
+        });
+      });
+      resolve();
+    });
+
+    peer.on("error", (err) => reject(err));
+
+    socket.on("signal", (data) => {
+      if (data.to === "sender") {
+        peer.signal(data.signal);
+      }
+    });
+
+    currentTransfer = peer;
+  });
+}
+
+function sendFolder(folderPath, device, onProgress, addHistory, chunked = false) {
+  return new Promise((resolve, reject) => {
+    const peer = initPeer(true, "sender");
+    let totalSize = 0;
+    let transferred = 0;
+    const files = [];
+
+    // 폴더 내 파일 목록 수집
+    function walkDir(dir) {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walkDir(fullPath);
+        } else {
+          files.push({ path: fullPath, relativePath: path.relative(folderPath, fullPath) });
+          totalSize += fs.statSync(fullPath).size;
+        }
+      }
+    }
+
+    walkDir(folderPath);
+
+    const socket = initSocket(device);
+
+    peer.on("signal", (data) => {
+      socket.emit("signal", { to: device.name, signal: data });
+    });
+
+    peer.on("connect", () => {
+      files.forEach((file) => {
+        const fileData = fs.readFileSync(file.path);
+        const name = file.relativePath.replace(/\\/g, "/"); // Windows 경로 슬래시 변환
+        const data = { type: "file", name, data: fileData, folder: path.basename(folderPath) };
         if (chunked) {
           const CHUNK_SIZE = 1024 * 1024;
           for (let i = 0; i < fileData.length; i += CHUNK_SIZE) {
@@ -64,7 +146,7 @@ function sendFiles(files, device, onProgress, addHistory, chunked = false) {
           id: Date.now(),
           type: "send",
           fileName: name,
-          device,
+          device: device.name,
           timestamp: new Date().toISOString(),
           status: "success",
         });
@@ -74,60 +156,7 @@ function sendFiles(files, device, onProgress, addHistory, chunked = false) {
 
     peer.on("error", (err) => reject(err));
 
-    require("socket.io-client")("http://localhost:3000").on("signal", (data) => {
-      if (data.to === "sender") {
-        peer.signal(data.signal);
-      }
-    });
-
-    currentTransfer = peer;
-  });
-}
-
-function sendFolder(folderPath, device, onProgress, addHistory, chunked = false) {
-  return new Promise((resolve, reject) => {
-    const peer = initPeer(true, "sender");
-    const fs = require("fs");
-    const fileData = fs.readFileSync(folderPath);
-    const name = require("path").basename(folderPath);
-    let transferred = 0;
-    const totalSize = fileData.length;
-
-    peer.on("signal", (data) => {
-      require("socket.io-client")("http://localhost:3000").emit("signal", {
-        to: device,
-        signal: data,
-      });
-    });
-
-    peer.on("connect", () => {
-      const data = { type: "folder", name, data: fileData };
-      if (chunked) {
-        const CHUNK_SIZE = 1024 * 1024;
-        for (let i = 0; i < fileData.length; i += CHUNK_SIZE) {
-          const chunk = fileData.slice(i, i + CHUNK_SIZE);
-          peer.send(JSON.stringify({ ...data, chunk, chunkIndex: i / CHUNK_SIZE, totalChunks: Math.ceil(fileData.length / CHUNK_SIZE) }));
-          transferred += chunk.length;
-          onProgress(transferred / totalSize);
-        }
-      } else {
-        peer.send(JSON.stringify(data));
-        onProgress(1);
-      }
-      addHistory({
-        id: Date.now(),
-        type: "send",
-        fileName: name,
-        device,
-        timestamp: new Date().toISOString(),
-        status: "success",
-      });
-      resolve();
-    });
-
-    peer.on("error", (err) => reject(err));
-
-    require("socket.io-client")("http://localhost:3000").on("signal", (data) => {
+    socket.on("signal", (data) => {
       if (data.to === "sender") {
         peer.signal(data.signal);
       }
@@ -143,11 +172,10 @@ function sendMessage(text, device) {
   const encryptionKeys = store.get("encryptionKeys") || {};
   const encryptedText = encryptionKeys.publicKey ? encryptData(text, encryptionKeys.publicKey) : text;
 
+  const socket = initSocket(device);
+
   peer.on("signal", (data) => {
-    require("socket.io-client")("http://localhost:3000").emit("signal", {
-      to: device,
-      signal: data,
-    });
+    socket.emit("signal", { to: device.name, signal: data });
   });
 
   peer.on("connect", () => {
@@ -155,7 +183,7 @@ function sendMessage(text, device) {
     peer.destroy();
   });
 
-  require("socket.io-client")("http://localhost:3000").on("signal", (data) => {
+  socket.on("signal", (data) => {
     if (data.to === "sender") {
       peer.signal(data.signal);
     }
@@ -164,11 +192,10 @@ function sendMessage(text, device) {
 
 function receiveData(peer, autoReceive, addHistory, setReceivedFiles, generatePreview, setMessages, onUpdate) {
   const chunks = {};
+  const socket = initSocket({ host: "localhost", port: 3000 }); // 수신자는 기본 시그널링 서버 사용
+
   peer.on("signal", (data) => {
-    require("socket.io-client")("http://localhost:3000").emit("signal", {
-      to: "receiver",
-      signal: data,
-    });
+    socket.emit("signal", { to: "receiver", signal: data });
   });
 
   peer.on("data", (data) => {
@@ -188,7 +215,7 @@ function receiveData(peer, autoReceive, addHistory, setReceivedFiles, generatePr
     }
   });
 
-  require("socket.io-client")("http://localhost:3000").on("signal", (data) => {
+  socket.on("signal", (data) => {
     if (data.to === "receiver") {
       peer.signal(data.signal);
     }
@@ -198,7 +225,8 @@ function receiveData(peer, autoReceive, addHistory, setReceivedFiles, generatePr
 function handleData(parsed, autoReceive, addHistory, setReceivedFiles, generatePreview, setMessages, onUpdate, encryptionKeys) {
   const decryptedData = parsed.text && encryptionKeys.privateKey ? decryptData(parsed.text, encryptionKeys.privateKey) : parsed.text;
   if (parsed.type === "file" || parsed.type === "folder") {
-    setReceivedFiles((prev) => [...prev, { name: parsed.name, data: parsed.data }]);
+    const savePath = parsed.folder ? `./Received/${parsed.folder}/${parsed.name}` : `./Received/${parsed.name}`;
+    setReceivedFiles((prev) => [...prev, { name: parsed.name, data: parsed.data, folder: parsed.folder }]);
     generatePreview(parsed.data, parsed.name);
     addHistory({
       id: Date.now(),
@@ -209,9 +237,8 @@ function handleData(parsed, autoReceive, addHistory, setReceivedFiles, generateP
       status: "success",
     });
     if (autoReceive) {
-      const fs = require("fs");
-      fs.mkdirSync("./Received", { recursive: true });
-      fs.writeFileSync(`./Received/${parsed.name}`, parsed.data);
+      fs.mkdirSync(path.dirname(savePath), { recursive: true });
+      fs.writeFileSync(savePath, parsed.data);
     }
   } else if (parsed.type === "message") {
     setMessages((prev) => [...prev, { text: decryptedData || parsed.text, sender: parsed.sender, timestamp: new Date() }]);
@@ -223,17 +250,15 @@ function handleData(parsed, autoReceive, addHistory, setReceivedFiles, generateP
 function sendUpdate(updateFilePath, device, onProgress, addHistory) {
   return new Promise((resolve, reject) => {
     const peer = initPeer(true, "sender");
-    const fs = require("fs");
     const fileData = fs.readFileSync(updateFilePath);
-    const name = require("path").basename(updateFilePath);
+    const name = path.basename(updateFilePath);
     let transferred = 0;
     const totalSize = fileData.length;
 
+    const socket = initSocket(device);
+
     peer.on("signal", (data) => {
-      require("socket.io-client")("http://localhost:3000").emit("signal", {
-        to: device,
-        signal: data,
-      });
+      socket.emit("signal", { to: device.name, signal: data });
     });
 
     peer.on("connect", () => {
@@ -244,7 +269,7 @@ function sendUpdate(updateFilePath, device, onProgress, addHistory) {
         id: Date.now(),
         type: "update",
         fileName: name,
-        device,
+        device: device.name,
         timestamp: new Date().toISOString(),
         status: "success",
       });
@@ -253,7 +278,7 @@ function sendUpdate(updateFilePath, device, onProgress, addHistory) {
 
     peer.on("error", (err) => reject(err));
 
-    require("socket.io-client")("http://localhost:3000").on("signal", (data) => {
+    socket.on("signal", (data) => {
       if (data.to === "sender") {
         peer.signal(data.signal);
       }
@@ -262,7 +287,6 @@ function sendUpdate(updateFilePath, device, onProgress, addHistory) {
 }
 
 function compareFiles(file1, file2) {
-  const fs = require("fs");
   const hash1 = require("crypto").createHash("sha256").update(fs.readFileSync(file1)).digest("hex");
   const hash2 = require("crypto").createHash("sha256").update(fs.readFileSync(file2)).digest("hex");
   return hash1 === hash2;
