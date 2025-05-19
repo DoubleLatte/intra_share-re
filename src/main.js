@@ -19,7 +19,7 @@ const settings = store.get("settings") || {};
 const devices = [];
 
 async function addFirewallRules() {
-  if (!settings.firewallAutoConfig) {
+  if (!settings.general.firewallAutoConfig) {
     console.log("Firewall auto-config disabled in settings");
     return;
   }
@@ -84,7 +84,7 @@ function createWindow() {
     },
     icon: path.join(__dirname, "icon.png"),
     frame: false,
-    backgroundColor: settings.customTheme?.backgroundImage ? "transparent" : "#2F3136",
+    backgroundColor: settings.ui.customTheme?.backgroundImage ? "transparent" : "#2F3136",
   });
 
   mainWindowState.manage(mainWindow);
@@ -94,7 +94,7 @@ function createWindow() {
   });
 
   mainWindow.on("close", (event) => {
-    if (!isQuiting && settings.enableTray) {
+    if (!isQuiting && settings.general.enableTray) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -106,14 +106,14 @@ function createWindow() {
 }
 
 function getNetworkInterface(settings) {
-  return settings.networkType === "local" ? undefined : "0.0.0.0";
+  return settings.network.networkType === "local" ? undefined : "0.0.0.0";
 }
 
 function setupMDNS() {
   try {
     const interfaces = os.networkInterfaces();
     let ip;
-    if (settings.hamachiEnabled) {
+    if (settings.network.enableHamachi) {
       ip = Object.values(interfaces)
         .flat()
         .find((i) => i.family === "IPv4" && i.address.startsWith("25."))?.address;
@@ -187,7 +187,7 @@ function setupMDNS() {
 
     mdns.on("error", (err) => {
       console.error("mDNS error:", err);
-      if (settings.manualIpEnabled) {
+      if (settings.network.manualIpEnabled) {
         mainWindow?.webContents.send("mdns-error", { message: "mDNS failed, try manual IP input" });
       }
     });
@@ -200,7 +200,7 @@ function setupMDNS() {
     return mdns;
   } catch (err) {
     console.error("Failed to setup mDNS:", err);
-    if (settings.manualIpEnabled) {
+    if (settings.network.manualIpEnabled) {
       mainWindow?.webContents.send("mdns-error", { message: "mDNS initialization failed" });
     }
     return null;
@@ -259,20 +259,20 @@ app.whenReady().then(async () => {
   try {
     // 자동 시작 설정 적용
     app.setLoginItemSettings({
-      openAtLogin: settings.autoStart,
+      openAtLogin: settings.general.autoStart,
       path: process.execPath,
     });
 
     await addFirewallRules();
     createWindow();
-    if (settings.enableTray) createTray();
+    if (settings.general.enableTray) createTray();
     const mdns = setupMDNS();
     if (!mdns) throw new Error("mDNS initialization failed");
 
     ipcMain.handle("get-devices", () => devices);
 
     ipcMain.handle("add-manual-device", async (event, { ip, port = 4321 }) => {
-      if (!settings.manualIpEnabled) {
+      if (!settings.network.manualIpEnabled) {
         return { success: false, error: "Manual IP input is disabled in settings" };
       }
       try {
@@ -299,14 +299,12 @@ app.whenReady().then(async () => {
       try {
         store.set("settings", { ...settings, ...newSettings });
         mainWindow?.webContents.send("settings-updated", store.get("settings"));
-        // 방화벽 설정 재적용
-        if (newSettings.firewallAutoConfig !== undefined) {
+        if (newSettings.general?.firewallAutoConfig !== undefined) {
           await addFirewallRules();
         }
-        // 자동 시작 설정 적용
-        if (newSettings.autoStart !== undefined) {
+        if (newSettings.general?.autoStart !== undefined) {
           app.setLoginItemSettings({
-            openAtLogin: newSettings.autoStart,
+            openAtLogin: newSettings.general.autoStart,
             path: process.execPath,
           });
         }
@@ -340,7 +338,7 @@ app.whenReady().then(async () => {
     });
 
     ipcMain.on("show-notification", (event, { title, body, tab, device }) => {
-      if (!settings.enableNotifications || !settings.notificationEvents[tab]) return;
+      if (!settings.notifications.enableNotifications || !settings.notifications.notificationEvents[tab]) return;
 
       const notification = new Notification({
         title,
@@ -355,7 +353,7 @@ app.whenReady().then(async () => {
 
       notification.show();
 
-      if (settings.enableSound) {
+      if (settings.notifications.enableSound) {
         try {
           const sound = new Howl({ src: [path.join(__dirname, "notification.mp3")] });
           sound.play();
