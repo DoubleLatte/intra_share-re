@@ -49,6 +49,8 @@ function initPeer(initiator, id, options = {}) {
 function sendFiles(files, device, onProgress, addHistory, chunked = false) {
   return new Promise((resolve, reject) => {
     try {
+      const store = require("../store");
+      const settings = store.get("settings") || {};
       const peer = initPeer(true, "sender");
       let totalSize = 0;
       let transferred = 0;
@@ -74,7 +76,7 @@ function sendFiles(files, device, onProgress, addHistory, chunked = false) {
       peer.on("connect", () => {
         files.forEach((file) => {
           try {
-            if (chunked) {
+            if (settings.fileTransfer.chunkedTransfer || chunked) {
               const CHUNK_SIZE = 1024 * 1024;
               const fileData = fs.readFileSync(file);
               const name = path.basename(file);
@@ -145,6 +147,8 @@ function sendFiles(files, device, onProgress, addHistory, chunked = false) {
 function sendFolder(folderPath, device, onProgress, addHistory, chunked = false) {
   return new Promise((resolve, reject) => {
     try {
+      const store = require("../store");
+      const settings = store.get("settings") || {};
       const peer = initPeer(true, "sender");
       let totalSize = 0;
       let transferred = 0;
@@ -191,7 +195,7 @@ function sendFolder(folderPath, device, onProgress, addHistory, chunked = false)
 
             stream.on("end", () => {
               const data = { type: "file", name, data: fileData, folder: path.basename(folderPath) };
-              if (chunked) {
+              if (settings.fileTransfer.chunkedTransfer || chunked) {
                 const CHUNK_SIZE = 1024 * 1024;
                 for (let i = 0; i < fileData.length; i += CHUNK_SIZE) {
                   const chunk = fileData.slice(i, i + CHUNK_SIZE);
@@ -333,8 +337,8 @@ function handleData(parsed, autoReceive, addHistory, setReceivedFiles, generateP
     const settings = store.get("settings") || {};
     if (parsed.type === "file" || parsed.type === "folder") {
       const savePath = parsed.folder
-        ? path.join(settings.autoSavePath, parsed.folder, parsed.name)
-        : path.join(settings.autoSavePath, parsed.name);
+        ? path.join(settings.fileTransfer.autoSavePath, parsed.folder, parsed.name)
+        : path.join(settings.fileTransfer.autoSavePath, parsed.name);
       setReceivedFiles((prev) => [...prev, { name: parsed.name, data: parsed.data, folder: parsed.folder }]);
       generatePreview(parsed.data, parsed.name);
       addHistory({
@@ -345,7 +349,7 @@ function handleData(parsed, autoReceive, addHistory, setReceivedFiles, generateP
         timestamp: new Date().toISOString(),
         status: "success",
       });
-      if (autoReceive) {
+      if (settings.fileTransfer.autoReceive || autoReceive) {
         try {
           fs.mkdirSync(path.dirname(savePath), { recursive: true });
           fs.writeFileSync(savePath, parsed.data);
