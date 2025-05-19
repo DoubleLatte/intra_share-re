@@ -32,5 +32,17 @@
   "devDependencies": {
     "electron": "^25.0.0",
     "electron-vite": "^1.0.23"
-  }
+  },
+  "scripts": {
+  "build:win": "electron-vite build && electron-builder -w"
+  },
+  "build": {
+    "appId": "com.intra-share.app",
+    "productName": "Intra Share",
+    "files": ["dist-electron/**/*", "dist/**/*"],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.png"
+    }
+}
 }
